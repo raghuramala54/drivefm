@@ -1,0 +1,10 @@
+# DriveLite preset: combine with a model config, e.g.
+#   python scripts/train.py --config configs/dinov2_flow.yaml configs/sims/drivelite.yaml
+data:
+  train_logs: [data/dl_train/driving_log.csv]
+  test_logs: [data/dl_test_shape/driving_log.csv, data/dl_test_snow/driving_log.csv]
+  use_side_cameras: false      # DART noise injection provides recovery data instead
+  balance_max_per_bin: 0       # curvy procedural tracks: no zero-steering glut to remove
+  val_block_seconds: 10.0
+  crop_top: 60
+  crop_bottom: 20

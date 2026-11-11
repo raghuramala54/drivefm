@@ -1,0 +1,11 @@
+[project]
+name = "drivefm"
+version = "0.1.0"
+description = "Foundation-model features + generative action heads + calibrated uncertainty for end-to-end driving in the Udacity simulator"
+requires-python = ">=3.9"
+
+[tool.setuptools]
+packages = ["drivefm", "drivefm.models", "drivefm.envs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

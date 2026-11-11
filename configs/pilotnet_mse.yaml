@@ -1,0 +1,14 @@
+# Baseline = the original 2020 project (NVIDIA PilotNet, MSE, single frame), re-implemented in PyTorch.
+name: pilotnet_mse
+model:
+  backbone: pilotnet
+  img_size: [66, 200]
+  color: yuv
+  pool: flatten
+  d_model: 100
+  head: mse
+  head_hidden: [50, 10]
+  head_act: elu
+train:
+  lr: 1.0e-3
+  backbone_lr_mult: 1.0

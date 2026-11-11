@@ -1,0 +1,21 @@
+# Proposed method + partial fine-tuning of the last 2 ViT blocks.
+name: dinov2_flow_ft
+data:
+  context_frames: 3
+  frame_stride: 2
+  chunk: 8
+model:
+  backbone: timm:vit_small_patch14_dinov2.lvd142m
+  freeze_backbone: true
+  unfreeze_last_n: 2
+  img_size: [98, 294]
+  color: rgb
+  pool: proj_flatten
+  d_model: 256
+  temporal_layers: 2
+  dropout: 0.1
+  head: flow
+train:
+  lr: 3.0e-4
+  backbone_lr_mult: 0.05
+  epochs: 30

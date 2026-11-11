@@ -1,0 +1,4 @@
+# Udacity simulator preset (manual recording; see README)
+data:
+  train_logs: [data/track1/driving_log.csv]
+  test_logs: [data/track2_eval/driving_log.csv]

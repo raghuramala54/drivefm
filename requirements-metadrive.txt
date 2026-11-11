@@ -1,0 +1,2 @@
+# MetaDrive needs Python 3.9 - 3.11 (tested: Python 3.11, metadrive-simulator 0.4.3, numpy 2.x)
+metadrive-simulator>=0.4.3

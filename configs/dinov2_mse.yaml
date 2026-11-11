@@ -1,0 +1,16 @@
+# Frozen DINOv2 ViT-S/14 features + attention pooling + deterministic head (isolates the backbone effect).
+name: dinov2_mse
+model:
+  backbone: timm:vit_small_patch14_dinov2.lvd142m
+  freeze_backbone: true
+  img_size: [98, 294]
+  color: rgb
+  pool: proj_flatten
+  d_model: 256
+  dropout: 0.1
+  head: mse
+  head_hidden: [256]
+  head_act: gelu
+train:
+  lr: 3.0e-4
+  epochs: 30

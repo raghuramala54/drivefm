@@ -1,0 +1,6 @@
+# The Udacity simulator speaks an old Socket.IO protocol; these exact versions are known to work.
+python-socketio==4.6.1
+python-engineio==3.13.2
+eventlet>=0.36          # 0.33.x breaks on Python >= 3.12
+flask>=2.0,<3.0
+pillow>=9.0
