@@ -1,238 +1,314 @@
-# DriveFM: foundation-model features, generative action chunks and calibrated uncertainty for end-to-end driving
+# DriveFM
 
-This project extends a classic **PilotNet behavioural-cloning** project (Keras, Udacity simulator, Track 1 → Track 2) into a controlled 2026-style study, with automatic closed-loop evaluation on **unlimited unseen roads**.
+**Uncertainty-aware end-to-end driving under visual domain shift.**
 
-> **Research question.** Can frozen vision foundation-model features, generative (multi-modal) action heads and calibrated uncertainty close the **generalisation gap to unseen roads and unseen visual conditions** in end-to-end behavioural cloning? Which kind of uncertainty actually **predicts the policy's own failures**: action spread (aleatoric) or feature novelty (epistemic)? Can it make closed-loop driving safer and decide **when to ask an expert for labels** (DAgger)?
+DriveFM learns to steer a car directly from a forward camera by imitating an expert driver. It is built to answer three questions:
 
----
+- Do pretrained vision foundation-model features (DINOv2) make a driving policy robust to roads and visual conditions it has never seen?
+- Which uncertainty signal predicts the policy's own failures: the spread of its predicted actions, or how unfamiliar the input looks?
+- Can that uncertainty make driving safer, and decide when to ask an expert for corrections?
 
-## Simulators: pick one (all share one API and one data format)
+Everything runs in simulation, with automatic data collection and automatic closed-loop evaluation on unseen roads.
 
-| | **DriveLite** (included, default) | **MetaDrive** (recommended for the paper) | Udacity (legacy) |
-|---|---|---|---|
-| Install | nothing extra (numpy + scipy + OpenCV) | `pip install metadrive-simulator` (Python ≤ 3.11) | download a 2017 Unity build |
-| Runs on | any laptop, any Python ≥ 3.9, no GPU | Linux / Windows with GPU or OpenGL; headless via `xvfb-run` | Win / Mac / Linux, display needed |
-| Speed with camera | ~55–60 FPS on a laptop CPU | fast on a GPU (~1 FPS with CPU software rendering) | real time only |
-| Roads | unlimited procedural closed tracks (seeded) | unlimited procedural maps: curves, ramps, roundabouts, intersections | 2 fixed tracks |
-| Visual domains | 4 styles: meadow, desert, snow, dusk | one look; traffic optional | 2 |
-| Expert | pure pursuit, built in | IDM (or MetaDrive's PPO expert) | none (you drive) |
-| Data collection | automatic, DART noise injection | automatic, DART noise injection | manual |
-| Closed-loop metrics | automatic: success, completion, CTE, failures/km, fail-AUROC | automatic: same + crashes | manual ENTER = intervention |
-| DAgger | yes | yes | no |
-
-**Recommended workflow.**
-1. Iterate on **DriveLite**: it runs everywhere, a full benchmark fits on one GPU in about a day, and its 2×2 generalisation matrix (shape × style) is clean.
-2. Report the main table on **MetaDrive** as well, because reviewers know it (Li et al., TPAMI 2022).
-3. Udacity remains supported for continuity with the original project.
-
-### DriveLite in one picture
 ![DriveLite camera views in the four visual styles](docs/drivelite_styles.png)
 
-Train on style 0 (meadow) tracks with seeds 0–59. Test on **unseen track seeds 1000+** in the same style ("shape" generalisation), and on unseen seeds in **unseen styles** (snow, dusk) for visual generalisation.
+---
 
+## Features
+
+- **Policies.**
+  - Backbones: a PilotNet CNN trained from scratch, or any `timm` model, such as DINOv2, ResNet or ConvNeXt, frozen or partially fine-tuned.
+  - Inputs: optional multi-frame context with a temporal Transformer.
+  - Outputs: chunks of future steering commands.
+  - Heads: MSE regression, a Mixture Density Network, or conditional flow matching with mode-seeking decoding.
+- **Uncertainty.**
+  - From the policy itself: flow-sample spread and MDN variance.
+  - From several models: deep ensembles, and MC-dropout.
+  - Feature-space novelty: a Mahalanobis distance on the policy embedding, fitted automatically after training.
+- **Risk-gated control.** The car slows down when the policy is uncertain or the input is unfamiliar. Thresholds are calibrated automatically on validation data.
+- **Simulators.**
+  - **DriveLite** (included): lightweight, with procedurally generated tracks in four visual styles.
+  - **MetaDrive** (optional): procedurally generated road networks.
+  - **Udacity**: legacy support.
+- **Data.** Automatic expert demonstrations with DART noise injection, which records recovery behaviour, plus DAgger, either classic or with uncertainty-gated expert queries.
+- **Evaluation.**
+  - Offline: steering error, smoothness, calibration, error detection, and domain-shift detection.
+  - Closed loop on unseen roads: success rate, route completion, failures per km, lane error, steering jerk, and failure-prediction AUROC.
+- **Experiment runner.** One script runs the whole study (data, training, closed-loop tests, DAgger, tables and figures), resuming where it stopped if interrupted.
+
+---
+
+## Simulators
+
+| | **DriveLite** (default) | **MetaDrive** (optional) | Udacity (legacy) |
+|---|---|---|---|
+| Install | included (numpy, scipy, OpenCV) | `pip install metadrive-simulator`, Python ≤ 3.11 | 2017 Unity build |
+| Hardware | any machine, no GPU needed | GPU / OpenGL; headless via `xvfb-run` | display needed |
+| Speed with camera | ~55–60 steps/s on a laptop CPU | fast on a GPU | real time |
+| Roads | unlimited procedural closed tracks | unlimited procedural maps: curves, ramps, roundabouts, intersections | 2 fixed tracks |
+| Visual styles | meadow, desert, snow, dusk | one | 2 |
+| Expert driver | pure pursuit | IDM, or MetaDrive's PPO expert | none |
+| Data collection | automatic | automatic | manual |
+| Closed-loop metrics | automatic | automatic, including crashes | manual |
+
+All simulators share one interface (`drivefm/envs`) and write the same log format, so every model and script works with each of them.
+
+**DriveLite evaluation setup.** Models train on meadow-style tracks with seeds 0–59 and are tested on unseen track seeds (1000+). Testing in the meadow style measures generalisation to new road shapes; testing in desert, snow and dusk measures generalisation to new visual conditions.
+
+---
+
+## Installation
+
+Requires Python 3.9+ (3.11 if you also want MetaDrive) and an NVIDIA GPU for DINOv2 models.
+
+**Linux / WSL:**
 ```bash
-python scripts/collect.py --env drivelite --out data/dl_train --seeds 0-59 --style 0 --noise 0.15
-python scripts/train.py   --config configs/dinov2_flow.yaml configs/sims/drivelite.yaml --seed 0 --out runs/dl_dinov2_flow_s0 --set name=dl_dinov2_flow
-python scripts/closed_loop_eval.py --env drivelite --style 2 --seeds 1000-1019 --ckpt runs/dl_dinov2_flow_s0/best.pt --tag snow --video 2
+bash setup/setup_linux.sh
 ```
 
-**Sanity check run during development** (CPU, tiny data, PilotNet baseline: 6 training tracks, 6 epochs; these are *not* paper results):
+**Windows** (PowerShell, from the project folder):
+```powershell
+powershell -ExecutionPolicy Bypass -File setup\setup_windows.ps1
+```
 
-| test | success | route completion | mean \|CTE\| | offline MAE |
-|---|---|---|---|---|
-| unseen tracks, same style | 3/3 | 100 % | 0.05 m | 0.009 |
-| unseen tracks, **snow** | 0/3 | 29 % | 0.96 m | 0.049 |
+The setup scripts:
+- create `.venv`;
+- install PyTorch with the CUDA build that matches your NVIDIA driver;
+- install the requirements, and MetaDrive if your Python version supports it;
+- benchmark the machine with `scripts/check_setup.py`;
+- run the tests.
 
-The baseline handles new road shapes but collapses under a new visual style, which is exactly the gap the proposed methods target. Offline error grew only 5× while closed-loop success fell from 100 % to 0 %. This is the known offline/closed-loop mismatch (Codevilla et al., ECCV 2018), and it is why closed-loop numbers are the main results.
-
-**A second sanity check: which uncertainty sees the domain shift?** A PilotNet-backbone flow policy (8-step chunks, 3 frames of context) was trained on the same 6 tracks for 15 epochs:
-
-| signal | errors in distribution (AUROC) | detects snow vs. familiar frames (shift AUROC) | mean on familiar val / snow |
-|---|---|---|---|
-| flow action spread σ (aleatoric) | **0.86–0.91** | 0.37 (blind to the shift) | 0.029 / 0.027 |
-| feature novelty, Mahalanobis (epistemic) | – | **1.00** | 0.45 / 14.7 |
-
-In closed loop with the combined risk gate (`--unc_source max`):
-- **Familiar style:** the car still completes 4/4 tracks, with an alarm on about 10 % of steps.
-- **Snow:** risk is maximal from the first frame, the car slows to the minimum speed, and every failure is preceded by an alarm. Detection works, but slowing down does not fix wrong steering.
-
-The fix has to come from the representation (H1) or from adaptation (H4).
-
-**A third sanity check: novelty-gated DAgger in snow.** Starting from the flow policy above (0/4 on snow), `dagger.py --style 2 --query uncertainty` ran 3 rounds of 3 snow tracks each:
-
-| round | expert labels (cumulative) | success on 4 unseen snow tracks |
-|---|---|---|
-| 0 (BC only) | 0 | 0/4 |
-| 1 | 1,698 | **4/4** |
-| 2 | 3,448 | 4/4 |
-| 3 | 5,171 | 4/4 |
-
-Adaptation is fast. The honest caveat: with `--risk_tau 0.5`, the gate still requested about 98 % of frames, because risk stayed high after adaptation. That happens because the novelty thresholds come from validation data that is mostly the original style. The real label-efficiency study (H4) therefore needs a sweep over `--risk_tau` and/or recalibration of the thresholds after each round; this is an open research knob, not a solved feature.
-
-These are tiny CPU runs with 1 seed, meant to show the pipeline produces meaningful signals. They are not results to publish.
-
----
-
-## What changes compared with the 2020 project
-
-| | 2020 project (baseline) | This repo |
-|---|---|---|
-| Framework | Keras / TF | PyTorch 2, AMP, EMA weights, cosine LR |
-| Simulator / data | Udacity, manual driving, 2 tracks | **DriveLite / MetaDrive**: procedural unseen roads, automatic expert with **DART** noise injection, **DAgger** |
-| Backbone | PilotNet trained from scratch | PilotNet **or** any `timm` model: DINOv2, ResNet, ConvNeXt, SigLIP… frozen, partially or fully fine-tuned |
-| Input | 1 frame | K frames + temporal Transformer |
-| Feature pooling | flatten | position-preserving spatial bottleneck (`proj_flatten`); attention pooling as an ablation |
-| Output | 1 steering value | **action chunk** of H future steering values |
-| Head | MSE regression | MSE / **Mixture Density Network** / **Conditional Flow Matching** with mode-seeking decoding |
-| Uncertainty | none | flow-sample spread, MDN variance, **deep ensembles**, MC-dropout, and **feature-space novelty** (Mahalanobis on the policy embedding, fitted automatically after training) |
-| Validation split | random 80/20 (leaks near-duplicate frames) | **time-block split + purging**; random split kept as an ablation |
-| Control | constant-throttle PI | **risk-gated speed** (σ and/or novelty, thresholds auto-calibrated on validation) + temporal ensembling of chunks |
-| Evaluation | val loss + "it drives" | offline: MAE, jitter, NLL, coverage, AUROC, E-AURC. Closed loop on unseen roads: **success rate, completion, failures/km, CTE, jerk, failure-prediction AUROC** |
-
-## Hypotheses the experiments test
-
-- **H1 (representation).** Frozen DINOv2 features generalise to unseen *styles* far better than PilotNet or an ImageNet CNN. They may matter less for unseen *shapes*.
-- **H2 (multi-modality).** Flow and MDN action chunks avoid mode-averaging and drive more smoothly than MSE: lower jerk and fewer failures.
-- **H3 (uncertainty).** Aleatoric σ flags hard in-distribution states, while feature novelty flags domain shift; their combination gives the best failure prediction (fail-AUROC, alarm recall at a low false-alarm rate), and risk-gated speed reduces failures/km.
-- **H4 (label efficiency and adaptation).** Uncertainty-gated DAgger, especially novelty-gated in a new visual domain, reaches classic-DAgger performance with a fraction of the expert labels.
-- **H5 (methodology).** A random per-frame split overestimates performance; the val–test gap shows it.
-
-Any of these can come out negative. A negative result reported with 3 seeds and confidence intervals is still a valid finding.
-
----
-
-## Install
-
+**Manual install:**
 ```bash
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121   # pick your CUDA version
-pip install -r requirements.txt                         # DriveLite needs nothing else
-pytest -q                                               # ~2 min on CPU: trains, drives and runs DAgger end to end
+python -m venv .venv && source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126   # cu126: driver >= 560, cu130: driver >= 580
+pip install -r requirements.txt
+python scripts/check_setup.py                                # GPU check, DINOv2 download, speed benchmark
+pytest -q
+```
 
-# optional: MetaDrive (use a Python 3.11 environment)
-pip install -r requirements-metadrive.txt
-DRIVEFM_TEST_METADRIVE=1 pytest -q tests/test_sims.py -k metadrive
-# optional: Udacity simulator server
-pip install -r requirements-sim.txt
+Optional extras:
+```bash
+pip install -r requirements-metadrive.txt     # MetaDrive (Python <= 3.11)
+pip install -r requirements-sim.txt           # Udacity simulator server
 ```
 
 The first DINOv2 run downloads `vit_small_patch14_dinov2.lvd142m` (~90 MB) through `timm`.
 
-## One-command benchmarks
+---
+
+## Quick start
+
+On Windows, run these in Git Bash with `source .venv/Scripts/activate`.
 
 ```bash
-bash scripts/run_drivelite_benchmark.sh     # data -> 6 models x 3 seeds -> ablations -> closed loop -> ensembles -> DAgger -> LaTeX tables
-bash scripts/run_metadrive_benchmark.sh     # same on MetaDrive maps, plus an unseen-maps-with-traffic setting
-bash scripts/run_udacity_benchmark.sh data/track1/driving_log.csv data/track2_eval/driving_log.csv   # legacy
+source .venv/bin/activate
+
+# end-to-end check of every stage at small scale (~30-60 min on a laptop GPU)
+PROFILE=quick bash scripts/run_focused.sh
+
+# full study (~10-14 h on an RTX 4050-class GPU)
+PROFILE=laptop bash scripts/run_focused.sh
 ```
 
-Override the scale with environment variables, e.g. `SEEDS="0" TRAIN_TRACKS=0-19 MODELS="pilotnet_mse dinov2_flow" bash scripts/run_drivelite_benchmark.sh` for a quick pass.
+The full study compares four models:
 
-## Step by step
+| | MSE head | flow-matching head |
+|---|---|---|
+| **PilotNet** (from scratch) | `pilotnet_mse` | `pilotnet_flow` |
+| **DINOv2 ViT-S/14** (frozen) | `dinov2_mse` | `dinov2_flow` |
 
-**1. Collect expert data.** DART (Laskey et al., CoRL 2017): the car executes expert steering plus correlated noise, and every frame is labelled with the *clean* expert action, so the data contains recoveries.
+Each model is trained with 3 seeds and tested in closed loop on unseen tracks in all four styles. The study also tests each speed gate (none, action spread, novelty, both), seed ensembles, and DAgger adaptation to snow.
+
+**Running stages separately.** Use `STAGES` to run part of the study:
 ```bash
-python scripts/collect.py --env drivelite --out data/dl_train      --seeds 0-59     --style 0 --noise 0.15
+PROFILE=laptop STAGES="data train" bash scripts/run_focused.sh
+PROFILE=laptop STAGES="closed_loop dagger tables" bash scripts/run_focused.sh
+PROFILE=laptop STAGES="metadrive tables" bash scripts/run_focused.sh     # needs MetaDrive
+```
+Re-running a command skips work that is already finished.
+
+**Profiles.**
+- `quick`: small end-to-end check.
+- `laptop`: the full study, tuned for a 6 GB GPU and a 16–20-thread CPU.
+- `cpu`: PilotNet models only, for machines without a GPU.
+
+**Overriding settings.** Environment variables override profile defaults, for example `JOBS=3 WORKERS=6`, `SEEDS="0 1"` or `EPOCHS_FLOW=50`.
+
+### Outputs
+
+`results/focused/`:
+- `REPORT.md`: all result tables (closed-loop generalisation, domain-shift detection, failure prediction, speed-gate effect, DAgger).
+- `fig_generalisation.png`, `fig_failure_prediction.png`
+- `*.tex`: LaTeX versions of the tables.
+- `closed_loop/`: per-episode summaries and telemetry.
+- `logs/`: one log per job.
+
+Trained models are saved in `runs/focused/<model>_s<seed>/`:
+- `best.pt`: the checkpoint;
+- `metrics.json`: offline metrics;
+- `log.csv`: training curves;
+- plots of the policy's steering on the test tracks.
+
+---
+
+## Usage
+
+The study runner calls the scripts below; each can also be used directly.
+
+### 1. Collect expert data
+The expert's executed steering gets correlated noise, while every frame is labelled with the clean expert action, so the data includes recoveries from drift.
+```bash
+python scripts/collect.py --env drivelite --out data/dl_train      --seeds 0-59      --style 0 --noise 0.15
 python scripts/collect.py --env drivelite --out data/dl_test_shape --seeds 1000-1009 --style 0 --noise 0
 python scripts/collect.py --env drivelite --out data/dl_test_snow  --seeds 1000-1009 --style 2 --noise 0
 python scripts/collect.py --env metadrive --out data/md_train      --seeds 0-99 --map_blocks 4 --noise 0.15
 ```
-Each output folder is in Udacity format (`IMG/` + `driving_log.csv`, plus `meta.json`), so the same loader handles every simulator.
+Each folder contains `IMG/`, `driving_log.csv` and `meta.json`, in Udacity format.
 
-**2. Train.** Stack a model config with a simulator preset; any key can be overridden with `--set`.
+### 2. Train
+Combine a model config with a simulator preset; override any key with `--set`.
 ```bash
-python scripts/train.py --config configs/pilotnet_mse.yaml configs/sims/drivelite.yaml --seed 0 --set name=dl_pilotnet_mse
-python scripts/train.py --config configs/dinov2_flow.yaml  configs/sims/drivelite.yaml --seed 0 --set name=dl_dinov2_flow data.chunk=16
+python scripts/train.py --config configs/focused/dinov2_flow.yaml configs/sims/drivelite.yaml --seed 0 \
+    --out runs/dinov2_flow_s0 --set train.epochs=30
+```
+Training uses:
+- bf16 mixed precision;
+- EMA weights and a cosine learning-rate schedule;
+- a time-block validation split with purging, so near-duplicate frames don't leak between training and validation.
+
+After training, the feature-novelty detector is fitted and its validation quantiles are stored in `best.pt`.
+
+### 3. Offline evaluation
+```bash
+python scripts/evaluate.py --ckpt runs/dinov2_flow_s0/best.pt --logs data/dl_test_snow/driving_log.csv
+python scripts/evaluate.py --ckpt runs/dinov2_flow_s{0,1,2}/best.pt --logs data/dl_test_snow/driving_log.csv   # ensemble
 ```
 
-**3. Offline evaluation** (deep ensemble = pass several checkpoints):
+### 4. Closed-loop evaluation
 ```bash
-python scripts/evaluate.py --ckpt runs/dl_dinov2_flow_s{0,1,2}/best.pt --logs data/dl_test_snow/driving_log.csv --out runs/ens_flow
+python scripts/closed_loop_eval.py --env drivelite --style 2 --seeds 1000-1019 \
+    --ckpt runs/dinov2_flow_s0/best.pt --tag snow --video 2
 ```
 
-**4. Closed-loop evaluation on unseen roads** (automatic, with optional mp4 videos):
+**Speed gate.** The risk score is 0 at or below the validation median and 1 at or above the validation 95th percentile. It is computed for both action spread and novelty, and their maximum is used by default. Risk maps the target speed between `--max_speed` and `--min_speed`.
+- `--unc_source sigma|ood|max` picks the signal.
+- `--no_gate` drives at constant speed.
+
+**Reported metrics:**
+- success rate and route completion;
+- failures per km and mean lane error (CTE);
+- steering jerk;
+- failure-prediction AUROC per signal;
+- alarm recall and false-alarm rate.
+
+Aggregate several runs into a table:
 ```bash
-python scripts/closed_loop_eval.py --env drivelite --style 3 --seeds 1000-1019 --ckpt runs/dl_dinov2_flow_s0/best.pt --tag dusk --video 3
-python scripts/closed_loop_eval.py ... --no_gate        # ablation: constant speed
 python scripts/aggregate_closed_loop.py --dir "results/closed_loop/*" --out results/closed_loop.tex
 ```
-The risk score is 0 at or below the validation median and 1 at or above the validation 95th percentile, for σ and for novelty; it is the max of the two by default. It sets the target speed between `--max_speed` and `--min_speed`. Ablate it with `--unc_source sigma|ood|max` or `--no_gate`. Summaries report:
-- fail-AUROC for σ, novelty and the combined risk;
-- alarm recall: the share of failures preceded by risk ≥ 0.5;
-- the false-alarm rate on successful episodes.
 
-**5. DAgger** (Ross et al., AISTATS 2011): classic, or with uncertainty-gated expert queries.
+### 5. DAgger
 ```bash
-python scripts/dagger.py --env drivelite --init_ckpt runs/dl_dinov2_flow_s0/best.pt --base_logs data/dl_train/driving_log.csv \
-    --iters 3 --seeds_per_iter 10 --query uncertainty --eval_seeds 1000-1019 --out runs/dl_dagger_uncertainty
+python scripts/dagger.py --env drivelite --style 2 --init_ckpt runs/dinov2_flow_s0/best.pt \
+    --base_logs data/dl_train/driving_log.csv --iters 3 --seeds_per_iter 10 \
+    --query uncertainty --risk_tau 0.5 --eval_seeds 1000-1019 --out runs/dagger_snow
 ```
-`dagger_history.json` records labels used vs. closed-loop success per round, which gives the label-efficiency figure. `--query uncertainty` asks the expert only where risk ≥ `--risk_tau`. Run it in a *new* style (e.g. `--style 2 --eval_seeds ...`) to test novelty-gated adaptation to a new domain.
+- `--query all` labels every visited frame (classic DAgger).
+- `--query uncertainty` asks the expert only where risk ≥ `--risk_tau`.
 
-**Udacity (legacy).** Record manually, train with `configs/sims/udacity.yaml`, and drive with `scripts/drive.py`, pressing ENTER at each intervention; `scripts/closed_loop_report.py` then computes autonomy %.
+`dagger_history.json` records the labels used and the closed-loop results for each round.
 
-## Difficulty knobs (if a setting is too easy or too hard)
+### Udacity simulator
+1. Record manually in the simulator.
+2. Train with `configs/sims/udacity.yaml`.
+3. Drive with `scripts/drive.py`, pressing Enter at each intervention.
+4. Compute the autonomy metric with `scripts/closed_loop_report.py`.
 
-- **DriveLite** (`drivefm/envs/drivelite.py`):
-  - `max_speed` in `closed_loop_eval.py`;
-  - `min_radius` / radius range in `make_track` (sharper curves);
-  - `steer_rate` (actuator lag);
-  - `randomize_lighting`;
-  - training on fewer tracks.
-- **MetaDrive:** `--map_blocks` (longer, more complex maps) and `--traffic` (crashes count as failures).
+---
 
-## Development notes
+## Configuration
 
-- **Flow heads need more optimisation steps than MSE.** On the synthetic test set, flow with 8-step chunks matched MSE accuracy only after about 30 epochs. Keep `epochs ≥ 30` and a generous `patience`.
-- **Attention pooling learns road position slowly**, which is why `proj_flatten` is the default (ablation: `abl_attnpool`).
-- **Decoding matters.** A single KDE-mode sample jitters; `mode_mean`, a mean-shift step around the densest mode, keeps multi-modality without the jitter (ablation: `abl_meandec`).
-- **MetaDrive's IDM expert** fails on a few maps (e.g. seed 100). `collect.py` drops the last 2 s before any failure, and logs expert failures in `meta.json`.
-- **MetaDrive camera rendering is memory hungry.** It used about 4.5 GB RAM with CPU software rendering (stable, no leak), and much less on a GPU. On a machine with 8 GB or less, don't run collection at the same time as training.
-- **Feature novelty is fitted after training.** `train.py` fits it on un-augmented training frames, stores its validation quantiles in `best.pt`, and reports `shift_auroc_ood` / `shift_auroc_sigma` for every test set in `metrics.json`.
+- **`configs/focused/*.yaml`**: the four models of the study.
+- **`configs/*.yaml`**: additional models (ResNet-18, DINOv2 + MDN, partially fine-tuned DINOv2).
+- **`configs/sims/*.yaml`**: data paths and cropping for each simulator.
+- **`drivefm/config.py`**: every option, with defaults.
 
-## Repository layout
+**Common options:**
+- `model.backbone` (`pilotnet` or `timm:<name>`)
+- `model.head` (`mse`, `mdn`, `flow`)
+- `model.freeze_backbone`
+- `data.context_frames`
+- `data.chunk`
+- `model.flow_decode`
+- `train.epochs`
+- `train.batch_size`
+
+**Training tips.**
+- Flow-matching heads converge more slowly than MSE heads; use about 30 epochs or more.
+- Check `best_epoch` in `metrics.json`. If it is close to the final epoch, train longer.
+
+**Making DriveLite easier or harder:**
+- the `--max_speed` limit;
+- curve sharpness (`min_radius` in `make_track`);
+- steering-actuator lag (`steer_rate`);
+- `randomize_lighting`;
+- the number of training tracks.
+
+In MetaDrive, use `--map_blocks` and `--traffic`.
+
+---
+
+## Repository structure
 
 ```
 drivefm/
-  envs/drivelite.py    procedural tracks, camera renderer, bicycle model, pure-pursuit expert
-  envs/metadrive_env.py  MetaDrive wrapper (RGB camera, IDM expert, sign conventions)
-  recorder.py          writes any simulator to Udacity-format logs
-  config.py  data.py  augment.py  evaluation.py  agent.py  utils.py
-  models/backbones.py  heads.py (MSE / MDN / flow matching)  policy.py (pooling, temporal, ensembles)
+  envs/drivelite.py      procedural tracks, camera renderer, bicycle model, pure-pursuit expert
+  envs/metadrive_env.py  MetaDrive wrapper (RGB camera, IDM expert)
+  models/                backbones, heads (MSE / MDN / flow matching), policy, ensembles, novelty
+  data.py augment.py     log loading, time-block splits, augmentation
+  agent.py               closed-loop agent: frame buffer, chunk ensembling, risk-gated speed
+  evaluation.py          offline metrics and plots
+  recorder.py            writes simulator episodes as training logs
 scripts/
-  collect.py  train.py  evaluate.py  closed_loop_eval.py  dagger.py
-  aggregate.py  aggregate_closed_loop.py
-  run_drivelite_benchmark.sh  run_metadrive_benchmark.sh  run_udacity_benchmark.sh
-  drive.py  closed_loop_report.py  make_synthetic_data.py      (Udacity tooling)
-configs/  model configs  +  sims/{drivelite,metadrive,udacity}.yaml presets
-tests/    test_smoke.py (models, data, training)   test_sims.py (simulators, full loop, DAgger)
+  run_focused.sh         full study runner
+  collect.py train.py evaluate.py closed_loop_eval.py dagger.py
+  aggregate.py aggregate_closed_loop.py summarize_dagger.py focused_report.py
+  check_setup.py         machine check and benchmark
+  run_drivelite_benchmark.sh run_metadrive_benchmark.sh   extended experiment grids
+  drive.py closed_loop_report.py                          Udacity tools
+configs/                 model configs, focused study configs, simulator presets
+setup/                   Linux and Windows setup scripts
+tests/                   unit and end-to-end tests
 ```
 
-## Suggested paper outline
+## Tests
 
-1. **Introduction:**
-   - behavioural cloning generalises poorly to unseen roads and conditions, and offline metrics hide it;
-   - recent robot-learning advances (foundation features, flow/diffusion policies, action chunking, uncertainty-aware DAgger) have not been compared in a controlled, low-cost driving setting.
-2. **Related work:** PilotNet (Bojarski et al. 2016); conditional imitation and offline-evaluation pitfalls (Codevilla et al. 2018, 2019); DAgger (Ross et al. 2011); DART (Laskey et al. 2017); SafeDAgger (Zhang & Cho 2017); EnsembleDAgger (Menda et al. 2019); MDNs (Bishop 1994); Diffusion Policy (Chi et al. 2023); Flow Matching / Rectified Flow (Lipman et al. 2023; Liu et al. 2023); action chunking (Zhao et al. 2023); π0 (Black et al. 2024); DINOv2 (Oquab et al. 2023); deep ensembles (Lakshminarayanan et al. 2017); MC-dropout (Gal & Ghahramani 2016); selective prediction (Geifman & El-Yaniv 2017); MetaDrive (Li et al. 2022).
-3. **Method:** policy architecture, flow-matching objective, mode-seeking decoding, uncertainty-gated control and uncertainty-gated DAgger.
-4. **Benchmark and protocol:** DriveLite shape × style matrix, MetaDrive unseen maps, metrics, seeds.
-5. **Results:** main closed-loop table, offline-vs-closed-loop correlation, ablations, fail-AUROC and risk-coverage curves, DAgger label-efficiency curve, videos.
-6. **Limitations:** simulation only; DriveLite's renderer is simple, so MetaDrive results matter for credibility; steering only, with PI speed control.
+```bash
+pytest -q                                                   # models, data, training, DriveLite, full loop, DAgger
+DRIVEFM_TEST_METADRIVE=1 pytest -q tests/test_sims.py -k metadrive
+```
 
-Venue realism: an honest, well-ablated version fits a robot-learning or intelligent-vehicles workshop, or IEEE IV / ITSC. Post it to arXiv once real results exist. Releasing DriveLite with the paper is a small extra contribution.
+## Troubleshooting
 
-## What has been verified, and what has not
+| problem | fix |
+|---|---|
+| `CUDA not available` | update the NVIDIA driver, or reinstall PyTorch from the `cu126` index |
+| out of GPU memory | `JOBS=3`, or add `train.batch_size=32` to the training overrides |
+| machine overheats or throttles | `JOBS=3 WORKERS=6` |
+| MetaDrive rendering errors | run headless with `xvfb-run -a`, or skip the `metadrive` stage |
+| interrupted run | run the same command again; finished steps are skipped |
 
-**Verified in development:**
-- **Test suite:** 16 tests pass, plus 1 MetaDrive test that is opt-in.
-- **Small CPU sanity experiments on DriveLite:** baseline and flow policies (closed loop), the novelty detector, and novelty-gated DAgger in snow.
-- **DriveLite:** the expert completes laps in all 4 styles, steering-sign conventions are checked, and collect → train → closed-loop eval (with video) → DAgger runs end to end.
-- **MetaDrive 0.4.3 (Python 3.11, headless via Xvfb software rendering):** camera observations, IDM expert, collect → train → closed-loop eval all ran.
-- **Udacity:** the `drive.py` server was checked against a scripted client speaking the simulator protocol.
+## References
 
-**Not verified in development:**
-- pretrained DINOv2 weights (they download on your machine);
-- MetaDrive on a GPU;
-- the real Udacity simulator;
-- any full-scale training run.
-
-**All numbers in a paper must come from your own runs.**
+Methods implemented in this project:
+- PilotNet (Bojarski et al., 2016)
+- DAgger (Ross et al., 2011)
+- DART (Laskey et al., 2017)
+- Mixture Density Networks (Bishop, 1994)
+- Flow Matching (Lipman et al., 2023) and Rectified Flow (Liu et al., 2023)
+- Action chunking (Zhao et al., 2023)
+- DINOv2 (Oquab et al., 2023)
+- Deep ensembles (Lakshminarayanan et al., 2017)
+- MC-dropout (Gal & Ghahramani, 2016)
+- Mahalanobis feature novelty (Lee et al., 2018)
+- MetaDrive (Li et al., 2022)
