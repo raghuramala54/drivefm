@@ -1,16 +1,84 @@
 # DriveFM
 
-**Uncertainty-aware end-to-end driving under visual domain shift.**
+End-to-end steering from a forward camera, trained by imitation and tested in closed loop under visual domain shift.
 
-DriveFM learns to steer a car directly from a forward camera by imitating an expert driver. It is built to answer three questions:
+The project asks two things:
 
-- Do pretrained vision foundation-model features (DINOv2) make a driving policy robust to roads and visual conditions it has never seen?
-- Which uncertainty signal predicts the policy's own failures: the spread of its predicted actions, or how unfamiliar the input looks?
-- Can that uncertainty make driving safer, and decide when to ask an expert for corrections?
+- Do frozen foundation-model features (DINOv2) keep a driving policy working on roads and visual conditions it never saw in training?
+- Which uncertainty signals warn before the car leaves the road: signals that measure how unfamiliar the input is, or signals that measure how unsure the policy is about its steering?
 
-Everything runs in simulation, with automatic data collection and automatic closed-loop evaluation on unseen roads.
+Paper: *Detecting Shift Is Not Predicting Failure: Uncertainty Signals for End-to-End Driving under Visual Domain Shift* (R. R. R. Pydi, G. Kaur).
 
-![DriveLite camera views in the four visual styles](docs/drivelite_styles.png)
+![The same test track in the seven visual styles](docs/drivelite_styles.png)
+
+---
+
+## Results
+
+All numbers come from the full study run on one laptop (RTX 4050 6 GB, 20-thread CPU). Models are trained on meadow-style tracks only and tested on 20 unseen tracks per style. Every model is trained with 3 seeds, so each cell below is 60 laps. In total: over 4,500 closed-loop laps, about 2,300 km.
+
+### Generalization to unseen styles
+
+Closed-loop success rate (%), no speed gate.
+
+| Model | meadow | desert | snow | dusk | fog | night | dust |
+|---|---|---|---|---|---|---|---|
+| PilotNet + MSE | 100 | 0 | 82 ± 26 | 100 | 100 | 100 | 0 |
+| PilotNet + flow | 100 | 0 | 0 | 100 | 100 | 100 | 0 |
+| DINOv2 + MSE | 100 | 100 | 93 ± 6 | 100 | 100 | 100 | 100 |
+| DINOv2 + MSE, 8-step chunks | 100 | 100 | 92 ± 8 | 100 | 100 | 100 | 100 |
+| DINOv2 + flow | 100 | 100 | 97 ± 2 | 100 | 100 | 100 | 100 |
+
+The frozen DINOv2 encoder handles every unseen style. PilotNet fails exactly in the two styles that have no center line (desert, dust). All 11 DINOv2 failures happen in snow.
+
+![Success per style](docs/fig_generalization.png)
+
+![Test drive on an unseen desert track](docs/fig_drive.png)
+
+### Which signal predicts failure?
+
+Each time step is labeled positive if the car leaves the road within the next 2 s. AUROC over all steps of all 420 laps per model; FA = share of steps with an alarm on laps that finished without failure.
+
+| Model (failures) | Output uncertainty | Mahalanobis | kNN | Autoencoder |
+|---|---|---|---|---|
+| DINOv2 + flow (2) | **0.99** (FA 6%) | 0.79 (FA 61%) | 0.66 (FA 83%) | 0.57 (FA 86%) |
+| DINOv2 + MSE (4) | **0.99** (FA 8%) | 0.81 (FA 61%) | 0.67 (FA 80%) | 0.57 (FA 86%) |
+| DINOv2 + MSE, 8-step (5) | **0.99** (FA 6%) | 0.81 (FA 60%) | 0.70 (FA 76%) | 0.57 (FA 86%) |
+| PilotNet + flow (180) | 0.54 (FA 44%) | 0.62 (FA 78%) | 0.60 (FA 85%) | 0.62 (FA 76%) |
+| PilotNet + MSE (131) | – | 0.65 (FA 83%) | 0.56 (FA 93%) | 0.60 (FA 80%) |
+
+Output uncertainty is the sample spread of the flow head, or MC dropout for the MSE heads. The three novelty detectors pick up every style change, including the ones the policy drives through without trouble, so they flag most of every safe lap. Output uncertainty raised an alarm before all 11 DINOv2 failures and stays quiet otherwise. On PilotNet it does not help: the policy is about as confident while drifting off the road as while driving correctly.
+
+![Failures vs. alarms per style](docs/fig_alarms.png)
+
+![Signals in the seconds before a failure](docs/fig_traces.png)
+
+### Slowing down when uncertain
+
+The speed gate lowers the target speed from 20 to 10 mph as risk rises. It did not change failures per km for any model or signal (PilotNet + flow in snow: 39.0 without a gate, 37.5–39.4 with one; every 95% interval for the change contains zero). The failures are steering errors, and they happen at 10 mph as well.
+
+### Smoothness: flow head or action chunks?
+
+| Model | Output | Steering jerk (×10⁻³) | Success |
+|---|---|---|---|
+| DINOv2 + MSE | 1 step | 11.4 | 98% |
+| DINOv2 + MSE | 8-step chunk | 4.4 | 98% |
+| DINOv2 + flow | 8-step chunk | 4.6 | 99% |
+
+The smoother steering of the flow model comes from predicting 8-step chunks, not from the flow head.
+
+### DAgger: adapting PilotNet + flow to desert
+
+Success goes from 0% to 100% after one round with every query rule. The rules differ in how many expert labels they need.
+
+| Query rule | Round 1 | Round 2 | Round 3 | Total labels |
+|---|---|---|---|---|
+| Label every frame | 6,567 | 7,477 | 6,809 | 20,853 |
+| Ask when fused risk (novelty-dominated) > 0.9 | 6,567 | 7,475 | 6,733 | 20,775 |
+| Ask when action spread > 0.5 | 6,499 | 1,022 | 404 | 7,925 |
+| Ask when action spread > 0.9 | 4,938 | 374 | 375 | **5,687** |
+
+Asking on the policy's own action spread needs 73% fewer labels for the same result.
 
 ---
 
@@ -27,10 +95,10 @@ Everything runs in simulation, with automatic data collection and automatic clos
   - Feature-space novelty: a Mahalanobis distance on the policy embedding, fitted automatically after training.
 - **Risk-gated control.** The car slows down when the policy is uncertain or the input is unfamiliar. Thresholds are calibrated automatically on validation data.
 - **Simulators.**
-  - **DriveLite** (included): lightweight, with procedurally generated tracks in four visual styles.
+  - **DriveLite** (included): lightweight, with procedurally generated tracks in seven visual styles.
   - **MetaDrive** (optional): procedurally generated road networks.
   - **Udacity**: legacy support.
-- **Data.** Automatic expert demonstrations with DART noise injection, which records recovery behaviour, plus DAgger, either classic or with uncertainty-gated expert queries.
+- **Data.** Automatic expert demonstrations with DART noise injection, which records recovery behavior, plus DAgger, either classic or with uncertainty-gated expert queries.
 - **Evaluation.**
   - Offline: steering error, smoothness, calibration, error detection, and domain-shift detection.
   - Closed loop on unseen roads: success rate, route completion, failures per km, lane error, steering jerk, and failure-prediction AUROC.
@@ -46,14 +114,14 @@ Everything runs in simulation, with automatic data collection and automatic clos
 | Hardware | any machine, no GPU needed | GPU / OpenGL; headless via `xvfb-run` | display needed |
 | Speed with camera | ~55–60 steps/s on a laptop CPU | fast on a GPU | real time |
 | Roads | unlimited procedural closed tracks | unlimited procedural maps: curves, ramps, roundabouts, intersections | 2 fixed tracks |
-| Visual styles | meadow, desert, snow, dusk | one | 2 |
+| Visual styles | meadow, desert, snow, dusk, fog, night, dust | one | 2 |
 | Expert driver | pure pursuit | IDM, or MetaDrive's PPO expert | none |
 | Data collection | automatic | automatic | manual |
 | Closed-loop metrics | automatic | automatic, including crashes | manual |
 
 All simulators share one interface (`drivefm/envs`) and write the same log format, so every model and script works with each of them.
 
-**DriveLite evaluation setup.** Models train on meadow-style tracks with seeds 0–59 and are tested on unseen track seeds (1000+). Testing in the meadow style measures generalisation to new road shapes; testing in desert, snow and dusk measures generalisation to new visual conditions.
+**DriveLite evaluation setup.** Models train on meadow-style tracks with seeds 0–59 and are tested on unseen track seeds (1000+). Testing in the meadow style measures generalization to new road shapes; the other six styles measure generalization to new visual conditions.
 
 ---
 
@@ -107,26 +175,51 @@ source .venv/bin/activate
 # end-to-end check of every stage at small scale (~30-60 min on a laptop GPU)
 PROFILE=quick bash scripts/run_focused.sh
 
-# full study (~10-14 h on an RTX 4050-class GPU)
+# full study (~20 h on an RTX 4050 laptop GPU; the two follow-up stages add ~5 h each)
 PROFILE=laptop bash scripts/run_focused.sh
 ```
 
-The full study compares four models:
+The main study compares four models (plus `dinov2_mse_chunk8`, an MSE model with 8-step chunks used as a control):
 
 | | MSE head | flow-matching head |
 |---|---|---|
 | **PilotNet** (from scratch) | `pilotnet_mse` | `pilotnet_flow` |
 | **DINOv2 ViT-S/14** (frozen) | `dinov2_mse` | `dinov2_flow` |
 
-Each model is trained with 3 seeds and tested in closed loop on unseen tracks in all four styles. The study also tests each speed gate (none, action spread, novelty, both), seed ensembles, and DAgger adaptation to snow.
+Each model is trained with 3 seeds and tested in closed loop on unseen tracks in every style. The study also tests each speed gate (none, action spread, novelty, both), seed ensembles, and DAgger adaptation.
 
 **Running stages separately.** Use `STAGES` to run part of the study:
 ```bash
 PROFILE=laptop STAGES="data train" bash scripts/run_focused.sh
 PROFILE=laptop STAGES="closed_loop dagger tables" bash scripts/run_focused.sh
 PROFILE=laptop STAGES="metadrive tables" bash scripts/run_focused.sh     # needs MetaDrive
+PROFILE=laptop STAGES="followup tables" bash scripts/run_focused.sh      # follow-up experiments
+PROFILE=laptop STAGES="followup2 tables" bash scripts/run_focused.sh     # harder styles, extra baselines, sigma-gated DAgger
 ```
 Re-running a command skips work that is already finished.
+
+**Follow-up experiments** (`followup` stage):
+- Gated ensemble tests use speed-gate thresholds calibrated on the ensemble's own validation spread.
+- `dinov2_mse_chunk8` (MSE head with 8-step action chunks) separates the effect of the flow head from the effect of chunking on smoothness.
+- DAgger starts from `pilotnet_flow`, which fails in desert, and is scored without the speed gate; round 0 is the policy before any expert labels.
+- The time limit scales with track length, so slow but safe laps count as timeouts, reported separately from failures.
+
+**Second follow-up** (`followup2` stage):
+- Three harder styles: fog, night and dust.
+- DAgger that queries the expert on the flow head's action spread only.
+- `scripts/extra_signals.py`: kNN feature distance, MC dropout and an autoencoder (SelfOracle-style), computed on every logged test lap by replaying it exactly in the simulator.
+
+**Watching the car drive.** `scripts/watch.py` opens a live window with each model's camera view, steering, uncertainty meters and a map of the track, and can save the run as an MP4:
+```bash
+# one model on an unseen desert track
+python scripts/watch.py --ckpt runs/focused/dinov2_flow_s0/best.pt --style 1 --track 1014
+# two models side by side, saved to a video
+python scripts/watch.py --ckpt runs/focused/dinov2_flow_s0/best.pt runs/focused/pilotnet_flow_s0/best.pt \
+    --style 1 --track 1014 --save videos/desert_1014.mp4
+```
+Styles: 0 meadow (training style), 1 desert, 2 snow, 3 dusk, 4 fog, 5 night, 6 dust. Tracks 1000–1019 are the unseen test tracks. Press SPACE to pause and `q` to quit.
+
+`scripts/paper_figures.py` drives two trained models live on one unseen track and saves the paper's driving figures (`fig_drive`, `fig_styles`), the lap results and every camera frame to `results/focused/paper_figs`.
 
 **Profiles.**
 - `quick`: small end-to-end check.
@@ -138,8 +231,8 @@ Re-running a command skips work that is already finished.
 ### Outputs
 
 `results/focused/`:
-- `REPORT.md`: all result tables (closed-loop generalisation, domain-shift detection, failure prediction, speed-gate effect, DAgger).
-- `fig_generalisation.png`, `fig_failure_prediction.png`
+- `REPORT.md`: all result tables (closed-loop generalization, domain-shift detection, failure prediction, speed-gate effect, DAgger).
+- `fig_generalization.png`, `fig_failure_prediction.png`
 - `*.tex`: LaTeX versions of the tables.
 - `closed_loop/`: per-episode summaries and telemetry.
 - `logs/`: one log per job.
@@ -157,7 +250,7 @@ Trained models are saved in `runs/focused/<model>_s<seed>/`:
 The study runner calls the scripts below; each can also be used directly.
 
 ### 1. Collect expert data
-The expert's executed steering gets correlated noise, while every frame is labelled with the clean expert action, so the data includes recoveries from drift.
+The expert's executed steering gets correlated noise, while every frame is labeled with the clean expert action, so the data includes recoveries from drift.
 ```bash
 python scripts/collect.py --env drivelite --out data/dl_train      --seeds 0-59      --style 0 --noise 0.15
 python scripts/collect.py --env drivelite --out data/dl_test_shape --seeds 1000-1009 --style 0 --noise 0
@@ -228,7 +321,7 @@ python scripts/dagger.py --env drivelite --style 2 --init_ckpt runs/dinov2_flow_
 
 ## Configuration
 
-- **`configs/focused/*.yaml`**: the four models of the study.
+- **`configs/focused/*.yaml`**: the models of the study.
 - **`configs/*.yaml`**: additional models (ResNet-18, DINOv2 + MDN, partially fine-tuned DINOv2).
 - **`configs/sims/*.yaml`**: data paths and cropping for each simulator.
 - **`drivefm/config.py`**: every option, with defaults.
@@ -269,10 +362,13 @@ drivefm/
   agent.py               closed-loop agent: frame buffer, chunk ensembling, risk-gated speed
   evaluation.py          offline metrics and plots
   recorder.py            writes simulator episodes as training logs
+  replay.py              exact replay of a logged lap (recovers every camera frame)
 scripts/
   run_focused.sh         full study runner
   collect.py train.py evaluate.py closed_loop_eval.py dagger.py
   aggregate.py aggregate_closed_loop.py summarize_dagger.py focused_report.py
+  extra_signals.py       kNN / MC-dropout / autoencoder failure-prediction baselines
+  watch.py paper_figures.py   live viewer and paper figures
   check_setup.py         machine check and benchmark
   run_drivelite_benchmark.sh run_metadrive_benchmark.sh   extended experiment grids
   drive.py closed_loop_report.py                          Udacity tools
@@ -312,3 +408,5 @@ Methods implemented in this project:
 - MC-dropout (Gal & Ghahramani, 2016)
 - Mahalanobis feature novelty (Lee et al., 2018)
 - MetaDrive (Li et al., 2022)
+- kNN out-of-distribution detection (Sun et al., 2022)
+- SelfOracle autoencoder misbehavior prediction (Stocco et al., 2020)

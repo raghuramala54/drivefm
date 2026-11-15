@@ -28,10 +28,10 @@ def main():
 
     groups = defaultdict(list)
     for p in sorted(glob.glob(os.path.join(args.runs, "*", "metrics.json"))):
-        r = json.load(open(p))
+        r = json.load(open(p, encoding="utf-8"))
         m = r[args.split]
         if args.split == "test":
-            if not m:
+            if not m or (args.dataset and args.dataset not in m):
                 continue
             m = m[args.dataset] if args.dataset else next(iter(m.values()))
         groups[r["name"]].append((m, r.get("params_trainable", 0)))
@@ -57,7 +57,7 @@ def main():
         tex.append(f"{name.replace('_', '-')} & {pm:.2f} & " + " & ".join(tcells) + " \\\\")
     tex += ["\\bottomrule", "\\end{tabular}"]
     if args.out:
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             f.write("\n".join(tex) + "\n")
         print(f"[latex] -> {args.out}")
 

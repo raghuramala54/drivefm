@@ -27,7 +27,7 @@ def main():
     args = ap.parse_args()
     groups = defaultdict(list)
     for p in sorted(glob.glob(os.path.join(args.dir, "*", "summary.json"))):
-        r = json.load(open(p))
+        r = json.load(open(p, encoding="utf-8"))
         model = re.sub(r"_s\d+$", "", r["model"])
         groups[(model + ("_ens" if len(r["ckpts"]) > 1 else ""), r["tag"], r["gate"])].append(r["summary"])
     if not groups:
@@ -52,7 +52,7 @@ def main():
         tex.append(f"{model.replace('_', '-')} & {tag} & {mark} & " + " & ".join(tcells) + " \\\\")
     tex += ["\\bottomrule", "\\end{tabular}"]
     if args.out:
-        with open(args.out, "w") as f:
+        with open(args.out, "w", encoding="utf-8") as f:
             f.write("\n".join(tex) + "\n")
         print(f"[latex] -> {args.out}")
 

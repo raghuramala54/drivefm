@@ -40,6 +40,7 @@ def summarize(episodes, steps, horizon_steps):
         "success_rate": float(np.mean([e["success"] for e in E])),
         "route_completion": float(np.mean([e["route_completion"] for e in E])),
         "failure_rate": float(np.mean([e["off_road"] or e["crash"] for e in E])),
+        "timeout_rate": float(np.mean([e.get("timeout", False) for e in E])),
         "mean_abs_cte": float(np.nanmean([e["mean_abs_cte"] for e in E])),
         "steer_jerk": float(np.nanmean([e["steer_jerk"] for e in E])),
         "mean_speed_mph": float(np.mean([e["mean_speed"] for e in E])),
@@ -94,10 +95,19 @@ def main(argv=None):
     ap.add_argument("--horizon", type=float, default=2.0, help="failure-prediction horizon (s)")
     ap.add_argument("--no_expert", action="store_true", help="skip expert-disagreement metric (faster)")
     ap.add_argument("--video", type=int, default=0, help="save mp4 of the first N episodes")
+    ap.add_argument("--time_limit", default="auto", choices=["auto", "fixed"],
+                    help="auto (DriveLite): allow a full lap even at --min_speed, so slowing down is never "
+                         "counted as a failure; fixed: always --max_steps")
+    ap.add_argument("--no_calib", action="store_true",
+                    help="ensembles: skip calibrating risk thresholds on validation data (not recommended)")
     args = ap.parse_args(argv)
 
     device = get_device(args.device)
     policy, cfg = load_policies(args.ckpt, device)
+    if len(args.ckpt) > 1 and not args.no_calib:
+        from drivefm.evaluation import calibrate_risk
+        policy.extra = calibrate_risk(policy, cfg, device, n_samples=args.samples or cfg["model"]["infer_samples"])
+        print(f"[calib] ensemble thresholds from validation: {policy.extra}")
     agent = DrivingAgent(policy, cfg, device, n_samples=args.samples or cfg["model"]["infer_samples"],
                          mc_dropout=args.mc_dropout, max_speed=args.max_speed, min_speed=args.min_speed,
                          sigma_lo=args.sigma_lo, sigma_hi=args.sigma_hi, gate=not args.no_gate,
@@ -118,6 +128,9 @@ def main(argv=None):
     for k, seed in enumerate(parse_seeds(args.seeds)):
         obs = env.reset(seed)
         agent.reset()
+        if args.time_limit == "auto" and getattr(env, "track", None) is not None:
+            lap_steps = env.track.length / (args.min_speed * 0.44704 * 0.1)
+            env.max_steps = max(args.max_steps, int(1.3 * lap_steps))
         st = {"sigma": [], "ood": [], "risk": [], "steer": [], "cte": [], "speed": [], "dis": []}
         vw = None
         if k < args.video:
@@ -150,7 +163,8 @@ def main(argv=None):
             vw.release()
         s = np.asarray(st["steer"])
         ep = {"seed": seed, "steps": len(s), "success": info["success"], "off_road": info["off_road"],
-              "crash": info["crash"], "route_completion": info["route_completion"],
+              "crash": info["crash"], "timeout": bool(info.get("timeout", False)),
+              "route_completion": info["route_completion"],
               "mean_abs_cte": float(np.nanmean(np.abs(st["cte"]))),
               "steer_jerk": float(np.mean(np.abs(np.diff(s, 2)))) if len(s) > 2 else float("nan"),
               "mean_speed": float(np.mean(st["speed"])), "km": float(np.sum(st["speed"]) * 0.44704 * 0.1 / 1000),

@@ -10,7 +10,10 @@ from torch.utils.data import DataLoader
 
 @torch.no_grad()
 def run_inference(policy, dataset, device, batch_size=64, n_samples=16, mc_dropout=False, num_workers=0):
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    if isinstance(dataset, DataLoader):        # a prepared (e.g. persistent-worker) loader
+        loader = dataset
+    else:
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
     policy.eval()
     P, S, G, I, O = [], [], [], [], []
     for b in loader:
@@ -115,3 +118,24 @@ def save_plots(res: dict, path_prefix: str, title: str = ""):
         fig.tight_layout()
         fig.savefig(path_prefix + "_risk_coverage.png", dpi=150)
         plt.close(fig)
+
+
+@torch.no_grad()
+def calibrate_risk(policy, cfg, device, n_frames: int = 1500, n_samples: int = 16, seed: int = 0, num_workers: int = 4):
+    """Validation quantiles of the policy's own uncertainty signals (sigma and feature novelty).
+
+    Single checkpoints store these at training time. A deep ensemble needs its own calibration:
+    its sigma includes member disagreement, so thresholds copied from one member are wrong
+    (for MSE members they are 0, which makes every step look risky)."""
+    from .data import build_datasets
+
+    _, val_ds, _, _, _ = build_datasets(cfg, cfg.get("seed", seed))
+    rng = np.random.default_rng(seed)
+    if len(val_ds.anchors) > n_frames:
+        val_ds.anchors = np.sort(rng.choice(val_ds.anchors, n_frames, replace=False))
+    res = run_inference(policy, val_ds, device, 64, n_samples, num_workers=num_workers)
+    sig = res["std"][:, 0]
+    out = {"sigma_q": {"p50": float(np.quantile(sig, 0.5)), "p95": float(np.quantile(sig, 0.95))}}
+    if "ood" in res:
+        out["ood_q"] = {"p50": float(np.quantile(res["ood"], 0.5)), "p95": float(np.quantile(res["ood"], 0.95))}
+    return out

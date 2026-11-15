@@ -37,6 +37,16 @@ STYLES = {
     3: dict(name="dusk", sky_top=(35, 38, 90), sky_bot=(232, 122, 72), ground=(48, 78, 44), ground_var=18,
             road=(58, 58, 64), road_var=6, edge=(205, 205, 190), center=(210, 170, 40), center_line=True,
             fog=(120, 82, 84), fog_len=70.0, mountain=(40, 40, 62), shadows=0.5, sun=0.6),
+    # harder unseen styles (follow-up study): visibility and contrast are reduced, not just colours
+    4: dict(name="fog", sky_top=(190, 194, 200), sky_bot=(205, 208, 212), ground=(85, 120, 70), ground_var=18,
+            road=(100, 100, 104), road_var=7, edge=(225, 225, 225), center=(220, 195, 60), center_line=True,
+            fog=(205, 208, 212), fog_len=16.0, mountain=(190, 194, 200), shadows=0.1, sun=1.0),
+    5: dict(name="night", sky_top=(8, 10, 22), sky_bot=(25, 28, 45), ground=(30, 40, 30), ground_var=8,
+            road=(36, 36, 40), road_var=5, edge=(150, 150, 140), center=(150, 125, 35), center_line=True,
+            fog=(12, 14, 24), fog_len=30.0, mountain=(18, 20, 32), shadows=0.0, sun=0.8),
+    6: dict(name="dust", sky_top=(185, 160, 125), sky_bot=(200, 180, 150), ground=(150, 128, 98), ground_var=14,
+            road=(128, 116, 100), road_var=8, edge=(170, 160, 140), center=(170, 160, 140), center_line=False,
+            fog=(195, 175, 145), fog_len=45.0, mountain=(175, 150, 115), shadows=0.0, sun=1.0),
 }
 
 

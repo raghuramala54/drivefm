@@ -1,0 +1,18 @@
+# Focused study, cell (scratch CNN, generative head): flow matching over 8-step steering chunks.
+name: pilotnet_flow
+data:
+  chunk: 8
+model:
+  backbone: pilotnet
+  img_size: [66, 200]
+  color: yuv
+  pool: proj_flatten
+  d_model: 128
+  head: flow
+  flow_hidden: 256
+  flow_layers: 3
+  infer_samples: 16
+train:
+  lr: 5.0e-4
+  backbone_lr_mult: 1.0
+  epochs: 30

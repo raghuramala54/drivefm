@@ -100,6 +100,8 @@ def main(argv=None):
     ap.add_argument("--epochs", type=int, default=10, help="fine-tuning epochs per round")
     ap.add_argument("--max_speed", type=float, default=20.0)
     ap.add_argument("--eval_seeds", default=None, help="closed-loop eval after each round, e.g. 1000-1019")
+    ap.add_argument("--eval_gate", action="store_true",
+                    help="evaluate with the risk speed gate on (default off, so results measure steering only)")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--train_set", nargs="*", default=[], help="extra train.py overrides")
     ap.add_argument("--seed", type=int, default=0)
@@ -111,6 +113,27 @@ def main(argv=None):
     env = make_env(args.env, **env_kwargs(args))
     ckpt, logs, history = args.init_ckpt, list(args.base_logs), []
     total_labels = 0
+    meta = {"style": args.style, "query": args.query, "risk_tau": args.risk_tau, "unc_source": args.unc_source}
+
+    def evaluate(ck, tag):
+        argv_ = ["--env", args.env, "--style", str(args.style), "--map_blocks", str(args.map_blocks), "--ckpt", ck,
+                 "--seeds", args.eval_seeds, "--out", os.path.join(args.out, "closed_loop"), "--tag", tag,
+                 "--no_expert", "--device", str(device)]
+        if not args.eval_gate:
+            argv_.append("--no_gate")
+        return closed_loop_eval.main(argv_)["summary"]
+
+    def save():
+        with open(os.path.join(args.out, "dagger_history.json"), "w") as f:
+            json.dump(history, f, indent=2)
+
+    if args.eval_seeds:   # round 0: the starting policy, before any expert corrections
+        env.close()
+        history.append({"iter": 0, "beta": None, "rollout": {"labels": 0, "frames_visited": 0, "episodes": 0,
+                                                              "failures": 0},
+                        "labels_cumulative": 0, "ckpt": ckpt, "closed_loop": evaluate(ckpt, "iter0"), **meta})
+        save()
+        env = make_env(args.env, **env_kwargs(args))
     for k in range(1, args.iters + 1):
         policy, cfg = load_policy(ckpt, device)
         tau = args.risk_tau
@@ -133,20 +156,15 @@ def main(argv=None):
                            f"train.init_ckpt={ckpt}", f"train.epochs={args.epochs}", "train.warmup_epochs=0",
                            f"name={cfg['name'].split('_dagger')[0]}_dagger_{args.query}", *args.train_set])
         ckpt = os.path.join(run_dir, "best.pt")
-        rec = {"iter": k, "beta": beta, "rollout": st, "labels_cumulative": total_labels, "ckpt": ckpt}
+        rec = {"iter": k, "beta": beta, "rollout": st, "labels_cumulative": total_labels, "ckpt": ckpt, **meta}
         if args.eval_seeds:
             env.close()
-            ev = closed_loop_eval.main(["--env", args.env, "--style", str(args.style), "--map_blocks",
-                                        str(args.map_blocks), "--ckpt", ckpt, "--seeds", args.eval_seeds,
-                                        "--out", os.path.join(args.out, "closed_loop"), "--tag", f"iter{k}",
-                                        "--no_expert", "--device", str(device)])
-            rec["closed_loop"] = ev["summary"]
+            rec["closed_loop"] = evaluate(ckpt, f"iter{k}")
             env = make_env(args.env, **env_kwargs(args))
         history.append(rec)
-        with open(os.path.join(args.out, "dagger_history.json"), "w") as f:
-            json.dump(history, f, indent=2)
+        save()
     env.close()
-    print(f"[done] {len(history)} rounds, {total_labels} expert labels -> {args.out}/dagger_history.json")
+    print(f"[done] {k} rounds, {total_labels} expert labels -> {args.out}/dagger_history.json")
 
 
 if __name__ == "__main__":

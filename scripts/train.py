@@ -66,6 +66,9 @@ def main(argv=None):
     loader = DataLoader(train_ds, batch_size=tcfg["batch_size"], shuffle=True, drop_last=len(train_ds) > tcfg["batch_size"],
                         num_workers=nw, worker_init_fn=worker_init_fn if nw > 0 else None,
                         pin_memory=device.type == "cuda", persistent_workers=nw > 0)
+    # validation loader built once: on Windows, re-spawning workers every epoch costs many seconds
+    val_loader = DataLoader(val_ds, batch_size=tcfg["batch_size"], shuffle=False, num_workers=nw,
+                            persistent_workers=nw > 0, pin_memory=device.type == "cuda")
     steps_per_epoch = tcfg["steps_per_epoch"] or len(loader)
     total = steps_per_epoch * tcfg["epochs"]
     opt = torch.optim.AdamW(param_groups(model, tcfg["lr"], tcfg["backbone_lr_mult"], tcfg["weight_decay"]),
@@ -108,7 +111,7 @@ def main(argv=None):
         row = {"epoch": epoch + 1, "step": step, "train_loss": run_loss / max(n, 1),
                "lr": opt.param_groups[0]["lr"], "time_s": round(time.time() - t0, 1)}
         if (epoch + 1) % tcfg["val_every"] == 0 or epoch + 1 == tcfg["epochs"]:
-            res = run_inference(ema.module, val_ds, device, tcfg["batch_size"], n_inf)
+            res = run_inference(ema.module, val_loader, device, tcfg["batch_size"], n_inf)
             vm = offline_metrics(res)
             row.update({f"val_{k}": v for k, v in vm.items()})
             score = vm[tcfg["select_metric"]]
@@ -138,7 +141,7 @@ def main(argv=None):
     plain.train = False
     n_fit = fit_feature_density(ema.module, DataLoader(plain, batch_size=tcfg["batch_size"], shuffle=False,
                                                          num_workers=nw), device)
-    val_res = run_inference(ema.module, val_ds, device, tcfg["batch_size"], n_inf)
+    val_res = run_inference(ema.module, val_loader, device, tcfg["batch_size"], n_inf)
     ck["extra"]["val"] = offline_metrics(val_res)
     ck["extra"]["ood_q"] = {"p50": float(np.quantile(val_res["ood"], 0.5)),
                             "p95": float(np.quantile(val_res["ood"], 0.95))}
@@ -148,7 +151,7 @@ def main(argv=None):
     result = {"name": cfg["name"], "seed": seed, "best_epoch": best_epoch, "params_total": n_total,
               "params_trainable": n_train, "data": stats, "val": ck["extra"]["val"], "test": {}}
     for tname, tds in test_sets.items():
-        res = run_inference(ema.module, tds, device, tcfg["batch_size"], n_inf)
+        res = run_inference(ema.module, tds, device, tcfg["batch_size"], n_inf, num_workers=nw)
         result["test"][tname] = offline_metrics(res)
         # domain-shift detection: can each uncertainty signal tell test frames from validation frames?
         lab = np.r_[np.zeros(len(val_res["ood"])), np.ones(len(res["ood"]))]
