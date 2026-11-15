@@ -232,7 +232,7 @@ Styles: 0 meadow (training style), 1 desert, 2 snow, 3 dusk, 4 fog, 5 night, 6 d
 
 `results/focused/`:
 - `REPORT.md`: all result tables (closed-loop generalization, domain-shift detection, failure prediction, speed-gate effect, DAgger).
-- `fig_generalization.png`, `fig_failure_prediction.png`
+- `fig_generalisation.png`, `fig_failure_prediction.png`
 - `*.tex`: LaTeX versions of the tables.
 - `closed_loop/`: per-episode summaries and telemetry.
 - `logs/`: one log per job.
